@@ -1,0 +1,70 @@
+/target
+# =========================
+# Rust / Cargo
+# =========================
+/target/
+Cargo.lock
+
+# If you're building libraries, you may want to keep Cargo.lock
+# For binaries (like Axum APIs), it's usually fine to ignore it
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.iml
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# SQLite (if used)
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Build artifacts
+# =========================
+dist/
+build/
+
+# =========================
+# Rust analyzer cache
+# =========================
+/.rustc_info.json
+
+# =========================
+# Docker (optional)
+# =========================
+docker-compose.override.yml
+
+# =========================
+# Coverage reports (if used)
+# =========================
+/coverage/
+
+# =========================
+# Temporary files
+# =========================
+tmp/
+temp/
