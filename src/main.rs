@@ -74,9 +74,9 @@ async fn main() {
         .allow_headers(Any);
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
         .build()
-        .unwrap();
+        .expect("Failed to create HTTP client");
 
     let state = AppState {
         client: Arc::new(client),
@@ -87,13 +87,13 @@ async fn main() {
         .with_state(state)
         .layer(cors);
 
-    
+    // ✅ Fly-compatible port handling
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = format!("0.0.0.0:{}", port);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .unwrap();
+        .expect("Failed to bind address");
 
     println!("Server running on http://{}/api/classify", addr);
 
@@ -104,34 +104,36 @@ async fn handler(
     Query(params): Query<NameQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let name = params.name.trim();
+    let name = params.name.trim().to_string();
 
     // -----------------------------
-    // VALIDATION (400)
+    // VALIDATION
     // -----------------------------
     if name.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiResponse::Error(ErrorResponse {
                 status: Status::Error,
-                message: "name parameter is required and cannot be empty".to_string(),
+                message: "name parameter is required".to_string(),
             })),
         );
     }
 
     // -----------------------------
-    // CALL EXTERNAL API
+    // EXTERNAL API CALL
     // -----------------------------
     let url = format!("https://api.genderize.io?name={}", name);
 
-    let response = match timeout(Duration::from_secs(3), state.client.get(&url).send()).await {
+    let request_future = state.client.get(&url).send();
+
+    let response = match timeout(Duration::from_secs(5), request_future).await {
         Ok(Ok(res)) => res,
         _ => {
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(ApiResponse::Error(ErrorResponse {
                     status: Status::Error,
-                    message: "Failed to call external API".to_string(),
+                    message: "Failed to fetch external API".to_string(),
                 })),
             );
         }
@@ -144,7 +146,7 @@ async fn handler(
                 StatusCode::BAD_GATEWAY,
                 Json(ApiResponse::Error(ErrorResponse {
                     status: Status::Error,
-                    message: "Invalid response format from external API".to_string(),
+                    message: "Invalid response from external API".to_string(),
                 })),
             );
         }
@@ -153,19 +155,19 @@ async fn handler(
     // -----------------------------
     // EDGE CASE
     // -----------------------------
-    if gender_data.gender.is_none() || gender_data.count.unwrap_or(0) == 0 {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiResponse::Error(ErrorResponse {
-                status: Status::Error,
-                message: "No prediction available for the provided name".to_string(),
-            })),
-        );
-    }
+    let gender = match gender_data.gender {
+        Some(g) => g,
+        None => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiResponse::Error(ErrorResponse {
+                    status: Status::Error,
+                    message: "No gender prediction available".to_string(),
+                })),
+            );
+        }
+    };
 
-    // -----------------------------
-    // PROCESS DATA
-    // -----------------------------
     let probability = gender_data.probability.unwrap_or(0.0);
     let sample_size = gender_data.count.unwrap_or(0) as i64;
 
@@ -173,16 +175,13 @@ async fn handler(
 
     let data = DataInfo {
         name: gender_data.name,
-        gender: gender_data.gender.unwrap_or("unknown".to_string()),
+        gender,
         probability,
         sample_size,
         is_confident,
         processed_at: Utc::now().to_rfc3339(),
     };
 
-    // -----------------------------
-    // SUCCESS RESPONSE
-    // -----------------------------
     (
         StatusCode::OK,
         Json(ApiResponse::Success(SuccessResponse {
