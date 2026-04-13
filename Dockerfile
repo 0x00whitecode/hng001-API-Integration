@@ -13,8 +13,11 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --bin task001
 
-# We do not need the Rust toolchain to run the binary!
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/task001 /usr/local/bin
+ENV PORT=8080
+EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/task001"]
