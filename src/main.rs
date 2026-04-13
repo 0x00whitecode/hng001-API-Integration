@@ -1,16 +1,18 @@
 use axum::{
-    extract::{Query, State},
-    response::IntoResponse,
-    routing::get,
     Json, Router,
+    extract::rejection::QueryRejection,
+    extract::{Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
 };
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
-use tower_http::cors::{CorsLayer, Any};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
 struct AppState {
@@ -46,9 +48,10 @@ struct DataInfo {
     processed_at: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct NameQuery {
-    name: String,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,27 +87,45 @@ async fn main() {
 
     let app = Router::new()
         .route("/api/classify", get(handler))
+        .route("/health", get(health))
         .with_state(state)
         .layer(cors);
 
-    // ✅ Fly-compatible port handling
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr = format!("0.0.0.0:{}", port);
+    let port = env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(8080);
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind address");
-
-    println!("Server running on http://{}/api/classify", addr);
+    println!("Server running on http://{addr}/api/classify");
 
     axum::serve(listener, app).await.unwrap();
 }
 
+async fn health() -> impl IntoResponse {
+    StatusCode::OK
+}
+
 async fn handler(
-    Query(params): Query<NameQuery>,
+    params: Result<Query<NameQuery>, QueryRejection>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    let name = params.name.trim().to_string();
+) -> Response {
+    let params = match params {
+        Ok(Query(params)) => params,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error(ErrorResponse {
+                    status: Status::Error,
+                    message: "name parameter is required and cannot be empty".to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let name = params.name.as_deref().unwrap_or("").trim();
 
     // -----------------------------
     // VALIDATION
@@ -116,17 +137,23 @@ async fn handler(
                 status: Status::Error,
                 message: "name parameter is required".to_string(),
             })),
-        );
+        )
+            .into_response();
     }
 
     // -----------------------------
     // EXTERNAL API CALL
     // -----------------------------
-    let url = format!("https://api.genderize.io?name={}", name);
-
-    let request_future = state.client.get(&url).send();
-
-    let response = match timeout(Duration::from_secs(5), request_future).await {
+    let response = match timeout(
+        Duration::from_secs(3),
+        state
+            .client
+            .get("https://api.genderize.io")
+            .query(&[("name", name)])
+            .send(),
+    )
+    .await
+    {
         Ok(Ok(res)) => res,
         _ => {
             return (
@@ -135,9 +162,20 @@ async fn handler(
                     status: Status::Error,
                     message: "Failed to fetch external API".to_string(),
                 })),
-            );
+            )
+                .into_response();
         }
     };
+    if !response.status().is_success() {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiResponse::Error(ErrorResponse {
+                status: Status::Error,
+                message: "Failed to call external API".to_string(),
+            })),
+        )
+            .into_response();
+    }
 
     let gender_data: GenderizeResponse = match response.json().await {
         Ok(data) => data,
@@ -148,25 +186,24 @@ async fn handler(
                     status: Status::Error,
                     message: "Invalid response from external API".to_string(),
                 })),
-            );
+            )
+                .into_response();
         }
     };
 
     // -----------------------------
     // EDGE CASE
     // -----------------------------
-    let gender = match gender_data.gender {
-        Some(g) => g,
-        None => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiResponse::Error(ErrorResponse {
-                    status: Status::Error,
-                    message: "No gender prediction available".to_string(),
-                })),
-            );
-        }
-    };
+    if gender_data.gender.is_none() || gender_data.count.unwrap_or(0) == 0 {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiResponse::Error(ErrorResponse {
+                status: Status::Error,
+                message: "No prediction available for the provided name".to_string(),
+            })),
+        )
+            .into_response();
+    }
 
     let probability = gender_data.probability.unwrap_or(0.0);
     let sample_size = gender_data.count.unwrap_or(0) as i64;
@@ -175,7 +212,7 @@ async fn handler(
 
     let data = DataInfo {
         name: gender_data.name,
-        gender,
+        gender: gender_data.gender.unwrap_or("unknown".to_string()),
         probability,
         sample_size,
         is_confident,
@@ -189,4 +226,5 @@ async fn handler(
             data,
         })),
     )
+        .into_response()
 }
