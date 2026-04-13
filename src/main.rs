@@ -97,9 +97,7 @@ async fn main() {
         .unwrap_or(8080);
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-
     println!("Server running on http://{addr}/api/classify");
-
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -135,7 +133,7 @@ async fn handler(
             StatusCode::BAD_REQUEST,
             Json(ApiResponse::Error(ErrorResponse {
                 status: Status::Error,
-                message: "name parameter is required".to_string(),
+                message: "name parameter is required and cannot be empty".to_string(),
             })),
         )
             .into_response();

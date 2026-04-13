@@ -268,6 +268,30 @@ You can deploy using:
 
 ---
 
+## Fly.io Deployment
+
+This repository is now configured for Fly.io with:
+
+- `fly.toml` (service config and health checks)
+- `Dockerfile` (multi-stage Rust build + CA certificates)
+- App binding to `PORT` with fallback to `8080`
+- Health endpoint at `GET /health`
+
+Deploy steps:
+
+```bash
+fly auth login
+fly launch --no-deploy
+fly deploy
+```
+
+Notes:
+
+- If `fly launch` suggests a different app name, update the `app` value in `fly.toml`.
+- The app serves HTTP internally on port `8080` as expected by Fly config.
+
+---
+
 ##  Repository Requirements
 
 Your GitHub repo must include:
