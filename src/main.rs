@@ -99,38 +99,31 @@ async fn health() -> impl IntoResponse {
     StatusCode::OK
 }
 
+fn error_response(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        Json(ApiResponse::Error(ErrorResponse {
+            status: Status::Error,
+            message: message.to_string(),
+        })),
+    )
+        .into_response()
+}
+
 async fn handler(
     RawQuery(raw_query): RawQuery,
     State(state): State<AppState>,
 ) -> Response {
     let raw_query = match raw_query {
         Some(q) => q,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error(ErrorResponse {
-                    status: Status::Error,
-                    message: "name parameter is required and cannot be empty".to_string(),
-                })),
-            )
-                .into_response();
-        }
+        None => return error_response(StatusCode::BAD_REQUEST, "name parameter is required and cannot be empty"),
     };
 
     // If `name` is provided as a non-string-ish structure (e.g. `name[]=john`),
     // urlencoded decoding into a `HashMap<String, String>` will fail.
     let params: HashMap<String, String> = match serde_urlencoded::from_str(&raw_query) {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiResponse::Error(ErrorResponse {
-                    status: Status::Error,
-                    message: "name is not a string".to_string(),
-                })),
-            )
-                .into_response();
-        }
+        Err(_) => return error_response(StatusCode::UNPROCESSABLE_ENTITY, "name is not a string"),
     };
 
     let name = params.get("name").map(|s| s.trim()).unwrap_or("");
@@ -139,14 +132,10 @@ async fn handler(
     // VALIDATION
     // -----------------------------
     if name.is_empty() {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error(ErrorResponse {
-                status: Status::Error,
-                message: "name parameter is required and cannot be empty".to_string(),
-            })),
-        )
-            .into_response();
+            "name parameter is required and cannot be empty",
+        );
     }
 
     // -----------------------------
@@ -163,40 +152,15 @@ async fn handler(
     .await
     {
         Ok(Ok(res)) => res,
-        _ => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ApiResponse::Error(ErrorResponse {
-                    status: Status::Error,
-                    message: "Failed to fetch external API".to_string(),
-                })),
-            )
-                .into_response();
-        }
+        _ => return error_response(StatusCode::BAD_GATEWAY, "Failed to fetch external API"),
     };
     if !response.status().is_success() {
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(ApiResponse::Error(ErrorResponse {
-                status: Status::Error,
-                message: "Failed to call external API".to_string(),
-            })),
-        )
-            .into_response();
+        return error_response(StatusCode::BAD_GATEWAY, "Failed to call external API");
     }
 
     let gender_data: GenderizeResponse = match response.json().await {
         Ok(data) => data,
-        Err(_) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ApiResponse::Error(ErrorResponse {
-                    status: Status::Error,
-                    message: "Invalid response from external API".to_string(),
-                })),
-            )
-                .into_response();
-        }
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Invalid response from external API"),
     };
 
     // -----------------------------
@@ -204,28 +168,15 @@ async fn handler(
     // -----------------------------
     let gender = match gender_data.gender.as_deref() {
         Some(g) if !g.trim().is_empty() => g.trim(),
-        _ => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ApiResponse::Error(ErrorResponse {
-                    status: Status::Error,
-                    message: "No prediction available for the provided name".to_string(),
-                })),
-            )
-                .into_response();
-        }
+        _ => return error_response(StatusCode::UNPROCESSABLE_ENTITY, "No prediction available for the provided name"),
     };
 
     let sample_size = gender_data.count.unwrap_or(0) as i64;
     if sample_size == 0 {
-        return (
+        return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiResponse::Error(ErrorResponse {
-                status: Status::Error,
-                message: "No prediction available for the provided name".to_string(),
-            })),
-        )
-            .into_response();
+            "No prediction available for the provided name",
+        );
     }
 
     let probability = gender_data.probability.unwrap_or(0.0);
