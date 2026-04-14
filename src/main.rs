@@ -1,15 +1,15 @@
 use axum::{
     Json, Router,
-    extract::rejection::QueryRejection,
-    extract::{Query, State},
+    extract::{RawQuery, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 use tower_http::cors::{Any, CorsLayer};
@@ -49,12 +49,6 @@ struct DataInfo {
 }
 
 #[derive(Deserialize, Serialize)]
-struct NameQuery {
-    #[serde(default)]
-    name: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct GenderizeResponse {
     name: String,
     gender: Option<String>,
@@ -106,12 +100,12 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn handler(
-    params: Result<Query<NameQuery>, QueryRejection>,
+    RawQuery(raw_query): RawQuery,
     State(state): State<AppState>,
 ) -> Response {
-    let params = match params {
-        Ok(Query(params)) => params,
-        Err(_) => {
+    let raw_query = match raw_query {
+        Some(q) => q,
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ApiResponse::Error(ErrorResponse {
@@ -123,7 +117,23 @@ async fn handler(
         }
     };
 
-    let name = params.name.as_deref().unwrap_or("").trim();
+    // If `name` is provided as a non-string-ish structure (e.g. `name[]=john`),
+    // urlencoded decoding into a `HashMap<String, String>` will fail.
+    let params: HashMap<String, String> = match serde_urlencoded::from_str(&raw_query) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiResponse::Error(ErrorResponse {
+                    status: Status::Error,
+                    message: "name is not a string".to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let name = params.get("name").map(|s| s.trim()).unwrap_or("");
 
     // -----------------------------
     // VALIDATION
@@ -192,7 +202,22 @@ async fn handler(
     // -----------------------------
     // EDGE CASE
     // -----------------------------
-    if gender_data.gender.is_none() || gender_data.count.unwrap_or(0) == 0 {
+    let gender = match gender_data.gender.as_deref() {
+        Some(g) if !g.trim().is_empty() => g.trim(),
+        _ => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiResponse::Error(ErrorResponse {
+                    status: Status::Error,
+                    message: "No prediction available for the provided name".to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let sample_size = gender_data.count.unwrap_or(0) as i64;
+    if sample_size == 0 {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ApiResponse::Error(ErrorResponse {
@@ -204,17 +229,16 @@ async fn handler(
     }
 
     let probability = gender_data.probability.unwrap_or(0.0);
-    let sample_size = gender_data.count.unwrap_or(0) as i64;
 
     let is_confident = probability >= 0.7 && sample_size >= 100;
 
     let data = DataInfo {
         name: gender_data.name,
-        gender: gender_data.gender.unwrap_or("unknown".to_string()),
+        gender: gender.to_string(),
         probability,
         sample_size,
         is_confident,
-        processed_at: Utc::now().to_rfc3339(),
+        processed_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
     };
 
     (
